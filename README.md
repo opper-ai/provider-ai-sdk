@@ -93,9 +93,44 @@ const { embedding } = await embed({
 
 Pass per-call Opper options via `providerOptions.opper`:
 
-### Tracing
+### Session tracing with `opperSpan`
 
-Track calls in the Opper platform by name and link them to a parent span:
+`opperSpan` creates an Opper span that groups all model calls in a session
+under the same trace. Pass it to `wrapLanguageModel` once and every call
+is automatically linked — no need to pass span IDs manually.
+
+```ts
+import { wrapLanguageModel, generateText, streamText } from 'ai';
+import { opper, opperSpan } from '@opper/ai-sdk-provider';
+
+const { middleware, handle } = opperSpan({ name: 'my-chat-session' });
+
+const model = wrapLanguageModel({
+  model: opper('openai/gpt-4o'),
+  middleware,
+});
+
+// Every call is linked to the same session span in Opper
+const { text } = await generateText({ model, prompt: 'Hello!' });
+await generateText({ model, prompt: 'Follow-up question...' });
+
+// Close the span when the session ends (e.g. conversation over, request done)
+await handle.end(text);
+```
+
+The span is created lazily on the first model call. `handle.end()` is a
+no-op if no calls were made. The span name defaults to `'aisdk-session'`
+if not specified.
+
+You can also read the span ID if you need it elsewhere:
+
+```ts
+const spanId = await handle.spanId; // e.g. 'span_032ZZczKjASAvGMnE5sdnd'
+```
+
+### Per-call tracing
+
+To attach a name or parent span to individual calls without a session wrapper:
 
 ```ts
 await generateText({
