@@ -1,55 +1,29 @@
-import type {
-  LanguageModelV3,
-  ImageModelV3,
-  SpeechModelV3,
-  TranscriptionModelV3,
-  EmbeddingModelV3,
-  NoSuchModelError,
-} from "@ai-sdk/provider";
+import {
+  OpenAICompatibleChatLanguageModel,
+  OpenAICompatibleEmbeddingModel,
+} from '@ai-sdk/openai-compatible';
+import type { LanguageModelV3, EmbeddingModelV3 } from '@ai-sdk/provider';
 import {
   FetchFunction,
   loadApiKey,
   withoutTrailingSlash,
-} from "@ai-sdk/provider-utils";
-import { OpperLanguageModel } from "./opper-language-model.js";
-import { OpperImageModel } from "./opper-image-model.js";
-import { OpperSpeechModel } from "./opper-speech-model.js";
-import { OpperTranscriptionModel } from "./opper-transcription-model.js";
+} from '@ai-sdk/provider-utils';
 
-export interface OpperProvider {
-  readonly specificationVersion: "v3";
+const DEFAULT_BASE_URL = 'https://api.opper.ai/v3/compat';
 
-  /**
-   * Creates a language model. `modelId` accepts any Opper model string:
-   * `"default"`, `"anthropic/claude-sonnet-4-5-20250514"`, `"openai/gpt-4o"`, etc.
-   */
-  (modelId: string): LanguageModelV3;
-  languageModel(modelId: string): LanguageModelV3;
-
-  // ProviderV3 required methods
-  embeddingModel(modelId: string): EmbeddingModelV3;
-  imageModel(modelId: string): ImageModelV3;
-  transcriptionModel(modelId?: string): TranscriptionModelV3;
-  speechModel(modelId?: string): SpeechModelV3;
-
-  /** Shorthand for imageModel. */
-  image(modelId: string): ImageModelV3;
-  /** Shorthand for speechModel. */
-  speech(modelId: string): SpeechModelV3;
-  /** Shorthand for transcriptionModel. */
-  transcription(modelId: string): TranscriptionModelV3;
-}
+// Internal marker used to smuggle per-call Opper headers through the body
+// before the custom fetch wrapper extracts them and converts to real headers.
+const OPPER_HEADERS_FIELD = '__opper__';
 
 export interface OpperProviderSettings {
   /**
-   * Opper API key.
-   * Defaults to `OPPER_API_KEY` environment variable.
+   * Opper API key. Defaults to the OPPER_API_KEY environment variable.
    */
   apiKey?: string;
 
   /**
-   * Base URL for the Opper API.
-   * Defaults to `https://api.opper.ai`.
+   * Base URL for Opper API calls.
+   * Defaults to https://api.opper.ai/v3/compat.
    */
   baseURL?: string;
 
@@ -59,93 +33,149 @@ export interface OpperProviderSettings {
   headers?: Record<string, string>;
 
   /**
-   * Custom fetch implementation — useful for proxies, testing, or middleware.
+   * Custom fetch implementation — useful for proxies or testing.
    */
   fetch?: FetchFunction;
 }
 
-const DEFAULT_BASE_URL = "https://api.opper.ai";
+export interface OpperProvider {
+  /**
+   * Creates a language model for the given Opper model ID.
+   *
+   * Accepts any Opper model string, e.g. `"openai/gpt-4o"` or
+   * `"anthropic/claude-sonnet-4-5"`.
+   *
+   * Opper-specific options (tracing, guardrails) can be set per-call via
+   * `providerOptions`:
+   *
+   * ```ts
+   * await generateText({
+   *   model: opper('openai/gpt-4o'),
+   *   prompt: 'Hello!',
+   *   providerOptions: {
+   *     opper: { name: 'my-function', guardInput: 'pii,secrets' },
+   *   },
+   * });
+   * ```
+   */
+  (modelId: string): LanguageModelV3;
 
-/**
- * Create an Opper AI SDK provider instance.
- *
- * @example
- * ```ts
- * import { createOpper } from "@opper/ai-sdk-provider";
- * import { generateText } from "ai";
- *
- * const opper = createOpper({ apiKey: process.env.OPPER_API_KEY });
- *
- * const { text } = await generateText({
- *   model: opper("anthropic/claude-sonnet-4-5-20250514"),
- *   prompt: "Hello!",
- * });
- * ```
- */
+  languageModel(modelId: string): LanguageModelV3;
+  chatModel(modelId: string): LanguageModelV3;
+  embeddingModel(modelId: string): EmbeddingModelV3;
+}
+
 export function createOpper(
-  options: OpperProviderSettings = {}
+  options: OpperProviderSettings = {},
 ): OpperProvider {
-  const baseURL =
-    withoutTrailingSlash(options.baseURL) ?? DEFAULT_BASE_URL;
+  const baseURL = withoutTrailingSlash(options.baseURL) ?? DEFAULT_BASE_URL;
 
   const getHeaders = () => ({
     Authorization: `Bearer ${loadApiKey({
       apiKey: options.apiKey,
-      environmentVariableName: "OPPER_API_KEY",
-      description: "Opper",
+      environmentVariableName: 'OPPER_API_KEY',
+      description: 'Opper',
     })}`,
     ...options.headers,
   });
 
-  const functionConfig = {
-    baseURL,
-    headers: getHeaders,
-    fetch: options.fetch,
-  };
+  // Wrap fetch to extract the Opper-specific marker field from the body and
+  // convert its contents into real request headers before the request is sent.
+  const baseFetch = (options.fetch ?? fetch) as typeof fetch;
+  const opperFetch: typeof fetch = async (input, init) => {
+    if (init?.body && typeof init.body === 'string') {
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = JSON.parse(init.body);
+      } catch {
+        return baseFetch(input, init);
+      }
 
-  const createLanguageModel = (modelId: string): LanguageModelV3 =>
-    new OpperLanguageModel(modelId, {
-      provider: "opper.language",
-      baseURL: `${baseURL}/v3/compat`,
-      headers: getHeaders,
-      fetch: options.fetch,
-    });
+      if (parsed[OPPER_HEADERS_FIELD]) {
+        const opperHeaders = parsed[OPPER_HEADERS_FIELD] as Record<string, string>;
+        delete parsed[OPPER_HEADERS_FIELD];
 
-  const createImageModel = (modelId: string): ImageModelV3 =>
-    new OpperImageModel(modelId, functionConfig);
+        const headers = new Headers(init.headers as HeadersInit);
+        for (const [key, value] of Object.entries(opperHeaders)) {
+          if (value) headers.set(key, value);
+        }
 
-  const createSpeechModel = (modelId: string): SpeechModelV3 =>
-    new OpperSpeechModel(modelId, functionConfig);
-
-  const createTranscriptionModel = (modelId: string): TranscriptionModelV3 =>
-    new OpperTranscriptionModel(modelId, functionConfig);
-
-  const noEmbeddingModel = (modelId: string): EmbeddingModelV3 => {
-    const { NoSuchModelError: E } = require("@ai-sdk/provider") as typeof import("@ai-sdk/provider");
-    throw new E({ modelId, modelType: "embeddingModel" });
-  };
-
-  const provider = function (modelId: string) {
-    if (new.target) {
-      throw new Error(
-        "The Opper provider function cannot be called with the new keyword."
-      );
+        return baseFetch(input, {
+          ...init,
+          headers,
+          body: JSON.stringify(parsed),
+        });
+      }
     }
-    return createLanguageModel(modelId);
-  } as unknown as OpperProvider;
+    return baseFetch(input, init);
+  };
 
-  (provider as any).specificationVersion = "v3";
-  (provider as any).languageModel = createLanguageModel;
-  (provider as any).embeddingModel = noEmbeddingModel;
-  (provider as any).imageModel = createImageModel;
-  (provider as any).image = createImageModel;
-  (provider as any).speechModel = createSpeechModel;
-  (provider as any).speech = createSpeechModel;
-  (provider as any).transcriptionModel = createTranscriptionModel;
-  (provider as any).transcription = createTranscriptionModel;
+  // Intercept the request body to promote any Opper-specific fields that came
+  // in via providerOptions.opper into the hidden marker field for opperFetch.
+  const transformRequestBody = (body: Record<string, unknown>) => {
+    const opperHeaders: Record<string, string> = {};
 
-  return provider;
+    if (typeof body.name === 'string') {
+      opperHeaders['X-Opper-Name'] = body.name;
+      delete body.name;
+    }
+    if (typeof body.parentSpanId === 'string') {
+      opperHeaders['X-Opper-Parent-Span-Id'] = body.parentSpanId;
+      delete body.parentSpanId;
+    }
+    if (typeof body.guardInput === 'string') {
+      opperHeaders['X-Opper-Guard-Input'] = body.guardInput;
+      delete body.guardInput;
+    }
+    if (typeof body.guardOutput === 'string') {
+      opperHeaders['X-Opper-Guard-Output'] = body.guardOutput;
+      delete body.guardOutput;
+    }
+    if (typeof body.guardAction === 'string') {
+      opperHeaders['X-Opper-Guard-Action'] = body.guardAction;
+      delete body.guardAction;
+    }
+
+    if (Object.keys(opperHeaders).length > 0) {
+      body[OPPER_HEADERS_FIELD] = opperHeaders;
+    }
+
+    return body;
+  };
+
+  const getChatConfig = () => ({
+    provider: 'opper.chat',
+    url: ({ path }: { path: string }) => `${baseURL}${path}`,
+    headers: getHeaders,
+    fetch: opperFetch as FetchFunction,
+    includeUsage: true,
+    transformRequestBody,
+  });
+
+  const getEmbeddingConfig = () => ({
+    provider: 'opper.embedding',
+    url: ({ path }: { path: string }) => `${baseURL}${path}`,
+    headers: getHeaders,
+    fetch: opperFetch as FetchFunction,
+  });
+
+  const createChatModel = (modelId: string) =>
+    new OpenAICompatibleChatLanguageModel(modelId, getChatConfig());
+
+  const createEmbeddingModel = (modelId: string) =>
+    new OpenAICompatibleEmbeddingModel(modelId, getEmbeddingConfig());
+
+  const provider = (modelId: string) => createChatModel(modelId);
+
+  provider.languageModel = createChatModel;
+  provider.chatModel = createChatModel;
+  provider.embeddingModel = createEmbeddingModel;
+
+  return provider as OpperProvider;
 }
 
-/** Default Opper provider instance — reads `OPPER_API_KEY` from env. */
+/**
+ * Default Opper provider instance. Reads the API key from the
+ * `OPPER_API_KEY` environment variable.
+ */
 export const opper = createOpper();
