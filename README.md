@@ -1,17 +1,17 @@
-# @opper/ai-sdk-provider
+# @opperai/ai-sdk-provider
 
 [Vercel AI SDK](https://sdk.vercel.ai/) provider for [Opper](https://opper.ai) — run any model through a single API key with built-in tracing and guardrails.
 
 ## Installation
 
 ```bash
-npm install @opper/ai-sdk-provider ai
+npm install @opperai/ai-sdk-provider ai
 ```
 
 ## Quick start
 
 ```ts
-import { opper } from '@opper/ai-sdk-provider';
+import { opper } from '@opperai/ai-sdk-provider';
 import { generateText } from 'ai';
 
 const { text } = await generateText({
@@ -25,7 +25,7 @@ Set your API key via the `OPPER_API_KEY` environment variable, or pass it explic
 ## Provider setup
 
 ```ts
-import { createOpper } from '@opper/ai-sdk-provider';
+import { createOpper } from '@opperai/ai-sdk-provider';
 
 const opper = createOpper({
   apiKey: process.env.OPPER_API_KEY, // default: OPPER_API_KEY env var
@@ -101,7 +101,7 @@ is automatically linked — no need to pass span IDs manually.
 
 ```ts
 import { wrapLanguageModel, generateText, streamText } from 'ai';
-import { opper, opperSpan } from '@opper/ai-sdk-provider';
+import { opper, opperSpan } from '@opperai/ai-sdk-provider';
 
 const { middleware, handle } = opperSpan({ name: 'my-chat-session' });
 
@@ -166,7 +166,7 @@ await generateText({
 For TypeScript autocomplete on these options, import the `OpperCallOptions` type:
 
 ```ts
-import type { OpperCallOptions } from '@opper/ai-sdk-provider';
+import type { OpperCallOptions } from '@opperai/ai-sdk-provider';
 
 const opperOptions: OpperCallOptions = {
   name: 'my-function',
