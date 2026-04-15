@@ -1,7 +1,9 @@
 {
   "name": "@opper/ai-sdk-provider",
   "version": "0.1.0",
-  "description": "AI SDK provider for Opper — use any model through the Vercel AI SDK",
+  "description": "Vercel AI SDK provider for Opper — run any model with a single API key",
+  "license": "MIT",
+  "author": "Opper AI",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -13,12 +15,16 @@
   },
   "files": [
     "dist",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "prepublishOnly": "npm run build",
+    "prepublishOnly": "npm run build && npm test",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -43,13 +49,16 @@
     "vercel-ai",
     "llm",
     "openai-compatible",
-    "ai-provider"
+    "ai-provider",
+    "ai",
+    "llm-gateway"
   ],
-  "author": "Opper AI",
-  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/opper-ai/provider-ai-sdk.git"
   },
-  "homepage": "https://github.com/opper-ai/provider-ai-sdk#readme"
+  "homepage": "https://github.com/opper-ai/provider-ai-sdk#readme",
+  "bugs": {
+    "url": "https://github.com/opper-ai/provider-ai-sdk/issues"
+  }
 }
