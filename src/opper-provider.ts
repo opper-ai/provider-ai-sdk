@@ -106,7 +106,7 @@ export function createOpper(
   const createLanguageModel = (modelId: string): LanguageModelV3 =>
     new OpperLanguageModel(modelId, {
       provider: "opper.language",
-      baseURL: `${baseURL}/v1/compat`,
+      baseURL: `${baseURL}/v3/compat`,
       headers: getHeaders,
       fetch: options.fetch,
     });

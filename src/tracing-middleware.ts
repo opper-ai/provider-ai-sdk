@@ -43,7 +43,7 @@ class OpperSpanClient {
 
   async createSpan(payload: CreateSpanPayload): Promise<SpanResponse | null> {
     try {
-      const response = await fetch(`${this.baseUrl}/v2/spans`, {
+      const response = await fetch(`${this.baseUrl}/v3/spans`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -60,7 +60,7 @@ class OpperSpanClient {
 
   async updateSpan(spanId: string, payload: UpdateSpanPayload): Promise<void> {
     try {
-      await fetch(`${this.baseUrl}/v2/spans/${spanId}`, {
+      await fetch(`${this.baseUrl}/v3/spans/${spanId}`, {
         method: "PATCH",
         headers: {
           "Content-Type": "application/json",
