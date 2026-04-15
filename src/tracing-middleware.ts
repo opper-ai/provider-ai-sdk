@@ -4,7 +4,7 @@ import type {
   LanguageModelV3Prompt,
   LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
-import { OpperSpanClient } from "./opper-spans.js";
+import { OpperSpanClient } from "./opper-span-client.js";
 
 export interface TracingMiddlewareOptions {
   apiKey: string;

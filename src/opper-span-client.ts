@@ -1,6 +1,6 @@
 import type { CreateSpanPayload, UpdateSpanPayload, SpanResponse } from "./types.js";
 
-const DEFAULT_BASE_URL = "http://localhost:8080";
+const DEFAULT_BASE_URL = "https://api.opper.ai";
 
 export class OpperSpanClient {
   private readonly baseUrl: string;

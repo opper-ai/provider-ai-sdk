@@ -1,7 +1,7 @@
 {
   "name": "@opper/ai-sdk-provider",
   "version": "0.1.0",
-  "description": "AI SDK provider for Opper Task API",
+  "description": "AI SDK provider for Opper — use any model through the Vercel AI SDK",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -12,23 +12,39 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "README.md"
   ],
   "scripts": {
     "build": "tsc",
-    "dev": "tsc --watch"
+    "dev": "tsc --watch",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@ai-sdk/provider": "^3.0.3",
-    "@ai-sdk/provider-utils": "^4.0.6"
+    "openai": "^4.0.0"
   },
   "devDependencies": {
-    "@types/node": "^25.0.8",
-    "ai": "^6.0.35",
-    "typescript": "^5.3.0",
-    "zod": "^4.3.5"
+    "@types/node": "^20.0.0",
+    "ai": "^4.0.0",
+    "typescript": "^5.3.0"
   },
   "peerDependencies": {
-    "ai": "^6.0.0"
-  }
+    "ai": ">=4.0.0"
+  },
+  "keywords": [
+    "opper",
+    "ai-sdk",
+    "vercel-ai",
+    "llm",
+    "openai-compatible",
+    "ai-provider"
+  ],
+  "author": "Opper AI",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/opper-ai/ai-sdk-provider.git"
+  },
+  "homepage": "https://github.com/opper-ai/ai-sdk-provider#readme"
 }
