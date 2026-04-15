@@ -2,84 +2,130 @@ import type {
   TranscriptionModelV3,
   TranscriptionModelV3CallOptions,
 } from "@ai-sdk/provider";
-import type { OpperModelConfig } from "./types.js";
-import { callOpperFunction } from "./opper-function-client.js";
+import {
+  combineHeaders,
+  convertUint8ArrayToBase64,
+  createJsonResponseHandler,
+  postJsonToApi,
+} from "@ai-sdk/provider-utils";
+import { z } from "zod";
+import type { OpperFunctionModelConfig } from "./opper-function-config.js";
+import { opperFailedResponseHandler } from "./opper-error.js";
+
+const transcriptionResponseSchema = z.object({
+  data: z.object({
+    text: z.string(),
+    segments: z
+      .array(
+        z.object({
+          text: z.string(),
+          start: z.number(),
+          end: z.number(),
+        })
+      )
+      .optional(),
+    language: z.string().optional(),
+    duration: z.number().optional(),
+  }),
+});
 
 export class OpperTranscriptionModel implements TranscriptionModelV3 {
   readonly specificationVersion = "v3" as const;
-  readonly provider = "opper";
+  readonly provider = "opper.transcription";
   readonly modelId: string;
 
-  constructor(private readonly config: OpperModelConfig) {
-    this.modelId = config.modelId;
+  constructor(
+    modelId: string,
+    private readonly config: OpperFunctionModelConfig
+  ) {
+    this.modelId = modelId;
   }
 
   async doGenerate(options: TranscriptionModelV3CallOptions) {
-    const { audio, mediaType, abortSignal, providerOptions } = options;
+    const { audio, mediaType, abortSignal, providerOptions, headers: callHeaders } =
+      options;
 
     const audioBase64 =
       typeof audio === "string"
         ? audio
-        : Buffer.from(audio).toString("base64");
+        : convertUint8ArrayToBase64(audio);
 
-    try {
-      const { data } = await callOpperFunction(
-        this.config,
-        { audio: audioBase64, media_type: mediaType },
-        {
-          type: "object",
-          properties: {
-            audio: { type: "string" },
-            media_type: { type: "string" },
-          },
-          required: ["audio", "media_type"],
+    const body = {
+      input_schema: {
+        type: "object",
+        properties: {
+          audio: { type: "string" },
+          media_type: { type: "string" },
         },
-        {
-          type: "object",
-          properties: {
-            text: { type: "string" },
-            segments: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  text: { type: "string" },
-                  start: { type: "number" },
-                  end: { type: "number" },
-                },
+        required: ["audio", "media_type"],
+      },
+      output_schema: {
+        type: "object",
+        properties: {
+          text: { type: "string" },
+          segments: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                text: { type: "string" },
+                start: { type: "number" },
+                end: { type: "number" },
               },
             },
-            language: { type: "string" },
-            duration: { type: "number" },
           },
-          required: ["text"],
+          language: { type: "string" },
+          duration: { type: "number" },
         },
-        { model: this.modelId !== "default" ? this.modelId : undefined },
-        { abortSignal, providerOptions }
-      );
+        required: ["text"],
+      },
+      input: { audio: audioBase64, media_type: mediaType },
+      hints: {
+        model: this.modelId !== "default" ? this.modelId : undefined,
+      },
+    };
 
-      type Segment = { text: string; start: number; end: number };
+    const functionName = resolveFunctionName(
+      providerOptions,
+      "ai-sdk-transcription"
+    );
 
-      return {
-        text: (data.text as string) ?? "",
-        segments:
-          ((data.segments as Segment[] | undefined) ?? []).map((s) => ({
-            text: s.text,
-            startSecond: s.start,
-            endSecond: s.end,
-          })),
-        language: data.language as string | undefined,
-        durationInSeconds: data.duration as number | undefined,
-        warnings: [],
-        response: {
-          timestamp: new Date(),
-          modelId: this.modelId,
-          headers: undefined,
-        },
-      };
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      throw new Error(`Opper transcription failed: ${msg}`);
-    }
+    const { value } = await postJsonToApi({
+      url: `${this.config.baseURL}/v3/functions/${encodeURIComponent(functionName)}/call`,
+      headers: combineHeaders(
+        this.config.headers(),
+        { "X-Opper-Name": functionName },
+        callHeaders as Record<string, string | undefined>
+      ),
+      body,
+      failedResponseHandler: opperFailedResponseHandler,
+      successfulResponseHandler: createJsonResponseHandler(
+        transcriptionResponseSchema
+      ),
+      abortSignal,
+      fetch: this.config.fetch,
+    });
+
+    const d = value.data;
+    return {
+      text: d.text,
+      segments: (d.segments ?? []).map((s) => ({
+        text: s.text,
+        startSecond: s.start,
+        endSecond: s.end,
+      })),
+      language: d.language,
+      durationInSeconds: d.duration,
+      warnings: [],
+      response: { timestamp: new Date(), modelId: this.modelId },
+    };
   }
+}
+
+function resolveFunctionName(
+  providerOptions: Record<string, unknown> | undefined,
+  defaultName: string
+): string {
+  const opts = providerOptions?.opper as { name?: string } | undefined;
+  return opts?.name ?? defaultName;
 }

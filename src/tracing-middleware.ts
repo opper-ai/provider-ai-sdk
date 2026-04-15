@@ -4,7 +4,76 @@ import type {
   LanguageModelV3Prompt,
   LanguageModelV3StreamPart,
 } from "@ai-sdk/provider";
-import { OpperSpanClient } from "./opper-span-client.js";
+
+// ── Span client (inlined — no external dependency) ───────────────────────────
+
+interface CreateSpanPayload {
+  name: string;
+  type?: string;
+  input?: unknown;
+  output?: unknown;
+  start_time?: string;
+  end_time?: string;
+  parent_id?: string;
+  trace_id?: string;
+  meta?: Record<string, unknown>;
+}
+
+interface UpdateSpanPayload {
+  end_time?: string;
+  output?: unknown;
+  meta?: Record<string, unknown>;
+}
+
+interface SpanResponse {
+  id: string;
+  trace_id: string;
+}
+
+const DEFAULT_BASE_URL = "https://api.opper.ai";
+
+class OpperSpanClient {
+  private readonly baseUrl: string;
+  private readonly apiKey: string;
+
+  constructor(options: { apiKey: string; baseUrl?: string }) {
+    this.apiKey = options.apiKey;
+    this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, "");
+  }
+
+  async createSpan(payload: CreateSpanPayload): Promise<SpanResponse | null> {
+    try {
+      const response = await fetch(`${this.baseUrl}/v2/spans`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(payload),
+      });
+      if (!response.ok) return null;
+      return (await response.json()) as SpanResponse;
+    } catch {
+      return null;
+    }
+  }
+
+  async updateSpan(spanId: string, payload: UpdateSpanPayload): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/v2/spans/${spanId}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${this.apiKey}`,
+        },
+        body: JSON.stringify(payload),
+      });
+    } catch {
+      // fire-and-forget — tracing errors should never surface to callers
+    }
+  }
+}
+
 
 export interface TracingMiddlewareOptions {
   apiKey: string;

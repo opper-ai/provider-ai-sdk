@@ -1,424 +1,351 @@
 /**
- * Opper language model — implements LanguageModelV3 using the OpenAI SDK
- * pointed at Opper's OpenAI-compatible endpoint (/v1/compat/chat/completions).
+ * Opper language model — implements LanguageModelV3.
  *
- * Uses the OpenAI npm package rather than raw fetch + manual SSE parsing,
- * for the same reason the pi provider does: SSE parsing is deceptively complex
- * and the OpenAI SDK handles all the edge cases (chunked streams, keep-alives,
- * reconnect events, retry-after headers, browser/Node compat).
+ * Uses @ai-sdk/provider-utils (postJsonToApi, createJsonResponseHandler,
+ * createEventSourceResponseHandler) — the same approach used by all
+ * first-party AI SDK providers. This gives us:
+ *  - Proper error handling via createJsonErrorResponseHandler
+ *  - Zod-validated responses
+ *  - Standardized SSE parsing via createEventSourceResponseHandler
+ *  - Consistent request/response telemetry fields
  */
 
-import OpenAI from "openai";
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
+  LanguageModelV3Content,
+  LanguageModelV3FinishReason,
   LanguageModelV3GenerateResult,
-  LanguageModelV3StreamResult,
   LanguageModelV3StreamPart,
-  LanguageModelV3ToolChoice,
+  LanguageModelV3StreamResult,
+  SharedV3Warning,
 } from "@ai-sdk/provider";
-import type { OpperModelConfig } from "./types.js";
+import {
+  combineHeaders,
+  createEventSourceResponseHandler,
+  createJsonResponseHandler,
+  FetchFunction,
+  generateId,
+  ParseResult,
+  postJsonToApi,
+} from "@ai-sdk/provider-utils";
+import { z } from "zod";
 import { convertMessages } from "./convert-messages.js";
+import { mapFinishReason } from "./map-finish-reason.js";
+import { mapUsage } from "./map-usage.js";
+import { opperFailedResponseHandler } from "./opper-error.js";
+import {
+  opperChatResponseSchema,
+  opperChatChunkSchema,
+  type OpperChatChunk,
+} from "./opper-chat-schemas.js";
 
-const DEFAULT_BASE_URL = "https://api.opper.ai";
+export type OpperLanguageModelConfig = {
+  provider: string;
+  baseURL: string;
+  headers: () => Record<string, string | undefined>;
+  fetch?: FetchFunction;
+  generateId?: () => string;
+};
 
 export class OpperLanguageModel implements LanguageModelV3 {
   readonly specificationVersion = "v3" as const;
-  readonly provider = "opper";
   readonly supportedUrls: Record<string, RegExp[]> = {};
 
   readonly modelId: string;
 
-  private readonly client: OpenAI;
-  private readonly timeoutMs: number;
-  private readonly functionName?: string;
-  private readonly parentSpanId?: string;
+  private readonly config: OpperLanguageModelConfig;
+  private readonly _generateId: () => string;
 
-  constructor(config: OpperModelConfig) {
-    this.modelId = config.modelId;
-    this.timeoutMs = config.timeoutMs ?? 120_000;
-    this.functionName = config.modelName ?? config.name;
-    this.parentSpanId = config.modelParentSpanId ?? config.parentSpanId;
-
-    const baseURL = (config.baseURL ?? DEFAULT_BASE_URL).replace(/\/$/, "");
-
-    this.client = new OpenAI({
-      apiKey: config.apiKey ?? (typeof process !== "undefined" ? process.env.OPPER_API_KEY : undefined) ?? "",
-      baseURL: `${baseURL}/v1/compat`,
-      timeout: this.timeoutMs,
-      dangerouslyAllowBrowser: true,
-      defaultHeaders: buildOpperHeaders(
-        config.modelName ?? config.name,
-        config.modelParentSpanId ?? config.parentSpanId
-      ),
-    });
+  constructor(modelId: string, config: OpperLanguageModelConfig) {
+    this.modelId = modelId;
+    this.config = config;
+    this._generateId = config.generateId ?? generateId;
   }
 
-  private resolveOpperHeaders(
-    providerOptions: Record<string, unknown> | undefined
-  ): Record<string, string> {
-    const opts = providerOptions?.opper as
-      | { name?: string; parentSpanId?: string }
-      | undefined;
-    return buildOpperHeaders(
-      opts?.name ?? this.functionName,
-      opts?.parentSpanId ?? this.parentSpanId
+  get provider(): string {
+    return this.config.provider;
+  }
+
+  private getArgs(options: LanguageModelV3CallOptions) {
+    const warnings: SharedV3Warning[] = [];
+
+    const {
+      prompt,
+      tools,
+      toolChoice,
+      maxOutputTokens,
+      temperature,
+      topP,
+      topK,
+      frequencyPenalty,
+      presencePenalty,
+      seed,
+      responseFormat,
+      stopSequences,
+      headers: callHeaders,
+    } = options;
+
+    // Warn about unsupported standard params
+    if (topK != null) warnings.push({ type: "unsupported", feature: "topK" });
+    if (stopSequences != null)
+      warnings.push({ type: "unsupported", feature: "stopSequences" });
+
+    const messages = convertMessages(prompt);
+
+    // Tools
+    const opperTools =
+      tools
+        ?.filter((t) => t.type === "function")
+        .map((t) => ({
+          type: "function" as const,
+          function: {
+            name: t.name,
+            description: t.description,
+            parameters: t.inputSchema,
+          },
+        })) ?? undefined;
+
+    const opperToolChoice = mapToolChoice(toolChoice);
+
+    const body: Record<string, unknown> = {
+      model: this.modelId,
+      messages,
+      ...(opperTools && opperTools.length > 0 && { tools: opperTools }),
+      ...(opperToolChoice && { tool_choice: opperToolChoice }),
+      ...(maxOutputTokens != null && { max_tokens: maxOutputTokens }),
+      ...(temperature != null && { temperature }),
+      ...(topP != null && { top_p: topP }),
+      ...(frequencyPenalty != null && { frequency_penalty: frequencyPenalty }),
+      ...(presencePenalty != null && { presence_penalty: presencePenalty }),
+      ...(seed != null && { seed }),
+    };
+
+    const headers = combineHeaders(
+      this.config.headers(),
+      callHeaders as Record<string, string | undefined>
     );
-  }
 
-  private buildTools(
-    tools: LanguageModelV3CallOptions["tools"]
-  ): OpenAI.ChatCompletionTool[] | undefined {
-    const fnTools = tools?.filter((t) => t.type === "function");
-    if (!fnTools || fnTools.length === 0) return undefined;
-    return fnTools.map((t) => ({
-      type: "function" as const,
-      function: {
-        name: t.name,
-        description: t.description,
-        parameters: t.inputSchema as Record<string, unknown>,
-        strict: false,
-      },
-    }));
+    return { body, headers, warnings };
   }
 
   async doGenerate(
     options: LanguageModelV3CallOptions
   ): Promise<LanguageModelV3GenerateResult> {
+    const { body, headers, warnings } = this.getArgs(options);
+
     const {
-      prompt,
-      tools,
-      toolChoice,
-      maxOutputTokens,
-      temperature,
-      providerOptions,
-      abortSignal,
-    } = options;
+      value: response,
+      responseHeaders,
+      rawValue: rawResponse,
+    } = await postJsonToApi({
+      url: `${this.config.baseURL}/chat/completions`,
+      headers,
+      body,
+      failedResponseHandler: opperFailedResponseHandler,
+      successfulResponseHandler: createJsonResponseHandler(
+        opperChatResponseSchema
+      ),
+      abortSignal: options.abortSignal,
+      fetch: this.config.fetch,
+    });
 
-    const messages = convertMessages(prompt);
-    const opperTools = this.buildTools(tools);
-    const extraHeaders = this.resolveOpperHeaders(providerOptions);
+    const choice = response.choices[0];
+    const message = choice?.message;
+    const content: LanguageModelV3Content[] = [];
 
-    try {
-      const response = await this.client.chat.completions.create(
-        {
-          model: this.modelId,
-          messages,
-          ...(opperTools && { tools: opperTools }),
-          ...mapToolChoice(toolChoice),
-          ...(maxOutputTokens !== undefined && { max_tokens: maxOutputTokens }),
-          ...(temperature !== undefined && { temperature }),
-        },
-        { signal: abortSignal, headers: extraHeaders }
-      );
-
-      const choice = response.choices[0];
-      const message = choice?.message;
-
-      const content: LanguageModelV3GenerateResult["content"] = [];
-
-      if (message?.content) {
-        content.push({ type: "text", text: message.content });
-      }
-
-      for (const tc of message?.tool_calls ?? []) {
-        content.push({
-          type: "tool-call",
-          toolCallId: tc.id,
-          toolName: tc.function.name,
-          input: tc.function.arguments,
-        });
-      }
-
-      if (content.length === 0) {
-        content.push({ type: "text", text: "" });
-      }
-
-      return {
-        content,
-        finishReason: mapFinishReason(choice?.finish_reason) as any,
-        usage: {
-          inputTokens: {
-            total: response.usage?.prompt_tokens ?? 0,
-            noCache: undefined,
-            cacheRead: undefined,
-            cacheWrite: undefined,
-          },
-          outputTokens: {
-            total: response.usage?.completion_tokens ?? 0,
-            text: undefined,
-            reasoning: undefined,
-          },
-        },
-        warnings: [],
-        response: { modelId: response.model ?? this.modelId },
-      };
-    } catch (error) {
-      // Encode errors into the result — never throw naked from doGenerate
-      const msg = errorMessage(error);
-      return {
-        content: [{ type: "text", text: "" }],
-        finishReason: "error" as any,
-        usage: emptyUsage(),
-        warnings: [{ type: "other", message: msg }],
-        response: { modelId: this.modelId },
-      };
+    if (message?.content) {
+      content.push({ type: "text", text: message.content });
     }
+
+    for (const tc of message?.tool_calls ?? []) {
+      content.push({
+        type: "tool-call",
+        toolCallId: tc.id,
+        toolName: tc.function.name,
+        input: tc.function.arguments,
+      });
+    }
+
+    return {
+      content,
+      finishReason: mapFinishReason(choice?.finish_reason),
+      usage: mapUsage(response.usage),
+      warnings,
+      request: { body },
+      response: {
+        id: response.id,
+        modelId: response.model ?? this.modelId,
+        headers: responseHeaders,
+        body: rawResponse,
+      },
+    };
   }
 
   async doStream(
     options: LanguageModelV3CallOptions
   ): Promise<LanguageModelV3StreamResult> {
-    const {
-      prompt,
-      tools,
-      toolChoice,
-      maxOutputTokens,
-      temperature,
-      providerOptions,
-      abortSignal,
-    } = options;
+    const { body: baseBody, headers, warnings } = this.getArgs(options);
+    const body = { ...baseBody, stream: true, stream_options: { include_usage: true } };
 
-    const messages = convertMessages(prompt);
-    const opperTools = this.buildTools(tools);
-    const extraHeaders = this.resolveOpperHeaders(providerOptions);
+    const { value: stream, responseHeaders } = await postJsonToApi({
+      url: `${this.config.baseURL}/chat/completions`,
+      headers,
+      body,
+      failedResponseHandler: opperFailedResponseHandler,
+      successfulResponseHandler: createEventSourceResponseHandler(
+        opperChatChunkSchema
+      ),
+      abortSignal: options.abortSignal,
+      fetch: this.config.fetch,
+    });
 
-    // If the initial request itself fails, encode the error into a stream
-    // rather than letting it propagate as a thrown exception.
-    let openaiStream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
-    try {
-      openaiStream = (await this.client.chat.completions.create(
-        {
-          model: this.modelId,
-          messages,
-          stream: true,
-          stream_options: { include_usage: true },
-          ...(opperTools && { tools: opperTools }),
-          ...mapToolChoice(toolChoice),
-          ...(maxOutputTokens !== undefined && { max_tokens: maxOutputTokens }),
-          ...(temperature !== undefined && { temperature }),
-        },
-        { signal: abortSignal, headers: extraHeaders }
-      )) as AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>;
-    } catch (error) {
-      return { stream: errorStream(errorMessage(error)) };
-    }
+    let finishReason: LanguageModelV3FinishReason = {
+      unified: "other",
+      raw: undefined,
+    };
+    let usage = mapUsage(undefined);
+    let isFirstChunk = true;
 
-    const stream = new ReadableStream<LanguageModelV3StreamPart>({
-      async start(controller) {
-        const textId = "text-0";
-        let textStartEmitted = false;
-        // Accumulate streaming tool calls by index (OpenAI streams them incrementally)
-        const pendingToolCalls = new Map<
-          number,
-          { id: string; name: string; args: string }
-        >();
-        let usageData: { prompt_tokens?: number; completion_tokens?: number } =
-          {};
-        let streamFinishReason: string | null = null;
-        let sawToolCalls = false;
+    // Track incremental tool call assembly (OpenAI streams tool calls by index)
+    const pendingToolCalls = new Map<
+      number,
+      { id: string; name: string; args: string }
+    >();
 
-        try {
-          for await (const chunk of openaiStream) {
-            // Usage-only chunk (comes after [DONE] with stream_options.include_usage)
-            if (chunk.usage) {
-              usageData = {
-                prompt_tokens: chunk.usage.prompt_tokens ?? undefined,
-                completion_tokens: chunk.usage.completion_tokens ?? undefined,
-              };
+    return {
+      stream: stream.pipeThrough(
+        new TransformStream<
+          ParseResult<z.infer<typeof opperChatChunkSchema>>,
+          LanguageModelV3StreamPart
+        >({
+          start(controller) {
+            controller.enqueue({ type: "stream-start", warnings });
+          },
+
+          transform(chunk, controller) {
+            // Surface parse errors as stream error events
+            if (!chunk.success) {
+              controller.enqueue({ type: "error", error: chunk.error });
+              return;
             }
 
-            const choice = chunk.choices?.[0];
-            if (!choice) continue;
+            const value = chunk.value;
+
+            // First chunk: emit response-metadata
+            if (isFirstChunk) {
+              isFirstChunk = false;
+              if (value.id || value.model) {
+                controller.enqueue({
+                  type: "response-metadata",
+                  id: value.id,
+                  modelId: value.model,
+                });
+              }
+            }
+
+            // Usage-only chunk (sent after [DONE] with stream_options.include_usage)
+            if (value.usage) {
+              usage = mapUsage(value.usage);
+            }
+
+            const choice = value.choices?.[0];
+            if (!choice) return;
 
             const delta = choice.delta;
 
-            // ── Text delta ──────────────────────────────────────────────────
-            if (delta?.content) {
-              if (!textStartEmitted) {
-                controller.enqueue({ type: "text-start", id: textId });
-                textStartEmitted = true;
-              }
+            // Text content
+            if (delta.content) {
+              controller.enqueue({ type: "text-start", id: "text-0" });
               controller.enqueue({
                 type: "text-delta",
-                id: textId,
+                id: "text-0",
                 delta: delta.content,
               });
+              controller.enqueue({ type: "text-end", id: "text-0" });
             }
 
-            // ── Tool call deltas ────────────────────────────────────────────
-            if (delta?.tool_calls) {
-              sawToolCalls = true;
+            // Incremental tool call assembly
+            if (delta.tool_calls) {
               for (const tc of delta.tool_calls) {
                 const idx = tc.index;
+
                 if (!pendingToolCalls.has(idx)) {
+                  const id = tc.id ?? `tool-${idx}`;
                   pendingToolCalls.set(idx, {
-                    id: tc.id ?? `tool-${idx}`,
+                    id,
                     name: tc.function?.name ?? "",
                     args: tc.function?.arguments ?? "",
+                  });
+                  // Emit tool-input-start for streaming UX
+                  controller.enqueue({
+                    type: "tool-input-start",
+                    id,
+                    toolName: tc.function?.name ?? "",
                   });
                 } else {
                   const pending = pendingToolCalls.get(idx)!;
                   if (tc.id) pending.id = tc.id;
                   if (tc.function?.name) pending.name = tc.function.name;
-                  if (tc.function?.arguments) pending.args += tc.function.arguments;
+                  if (tc.function?.arguments) {
+                    controller.enqueue({
+                      type: "tool-input-delta",
+                      id: pending.id,
+                      delta: tc.function.arguments,
+                    });
+                    pending.args += tc.function.arguments;
+                  }
                 }
               }
             }
 
-            // ── Finish reason ───────────────────────────────────────────────
             if (choice.finish_reason) {
-              streamFinishReason = choice.finish_reason;
-              if (textStartEmitted) {
-                controller.enqueue({ type: "text-end", id: textId });
-                textStartEmitted = false;
-              }
-              for (const [, tc] of pendingToolCalls) {
-                controller.enqueue({
-                  type: "tool-call",
-                  toolCallId: tc.id,
-                  toolName: tc.name,
-                  input: tc.args || "{}",
-                });
-              }
-              pendingToolCalls.clear();
+              finishReason = mapFinishReason(choice.finish_reason);
             }
-          }
-        } catch (error) {
-          // Encode stream errors as a finish event rather than throwing
-          controller.enqueue({
-            type: "finish",
-            finishReason: "error" as any,
-            usage: emptyUsage(),
-          });
-          controller.close();
-          return;
-        }
-
-        // Flush any text / tool calls that didn't get a finish_reason chunk
-        if (textStartEmitted) {
-          controller.enqueue({ type: "text-end", id: textId });
-        }
-        for (const [, tc] of pendingToolCalls) {
-          controller.enqueue({
-            type: "tool-call",
-            toolCallId: tc.id,
-            toolName: tc.name,
-            input: tc.args || "{}",
-          });
-        }
-
-        const reason =
-          sawToolCalls || streamFinishReason === "tool_calls"
-            ? "tool-calls"
-            : streamFinishReason === "length"
-              ? "length"
-              : "stop";
-
-        controller.enqueue({
-          type: "finish",
-          finishReason: reason as any,
-          usage: {
-            inputTokens: {
-              total: usageData.prompt_tokens ?? 0,
-              noCache: undefined,
-              cacheRead: undefined,
-              cacheWrite: undefined,
-            },
-            outputTokens: {
-              total: usageData.completion_tokens ?? 0,
-              text: undefined,
-              reasoning: undefined,
-            },
           },
-        });
 
-        controller.close();
-      },
-    });
+          flush(controller) {
+            // Emit completed tool calls
+            for (const [, tc] of pendingToolCalls) {
+              controller.enqueue({ type: "tool-input-end", id: tc.id });
+              controller.enqueue({
+                type: "tool-call",
+                toolCallId: tc.id,
+                toolName: tc.name,
+                input: tc.args || "{}",
+              });
+            }
 
-    return { stream };
+            controller.enqueue({
+              type: "finish",
+              finishReason,
+              usage,
+            });
+          },
+        })
+      ),
+      request: { body },
+      response: { headers: responseHeaders },
+    };
   }
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function buildOpperHeaders(
-  name?: string,
-  parentSpanId?: string
-): Record<string, string> {
-  const headers: Record<string, string> = {};
-  if (name) headers["X-Opper-Name"] = name;
-  if (parentSpanId) headers["X-Opper-Parent-Span-Id"] = parentSpanId;
-  return headers;
-}
-
 function mapToolChoice(
-  toolChoice: LanguageModelV3ToolChoice | undefined
-): Partial<Pick<OpenAI.ChatCompletionCreateParams, "tool_choice">> {
-  if (!toolChoice) return {};
+  toolChoice: LanguageModelV3CallOptions["toolChoice"]
+): string | { type: "function"; function: { name: string } } | undefined {
+  if (!toolChoice) return undefined;
   switch (toolChoice.type) {
     case "none":
-      return { tool_choice: "none" };
+      return "none";
     case "auto":
-      return { tool_choice: "auto" };
+      return "auto";
     case "required":
-      return { tool_choice: "required" };
+      return "required";
     case "tool":
-      return {
-        tool_choice: {
-          type: "function",
-          function: { name: toolChoice.toolName },
-        },
-      };
+      return { type: "function", function: { name: toolChoice.toolName } };
     default:
-      return {};
+      return undefined;
   }
-}
-
-function mapFinishReason(reason?: string | null): string {
-  switch (reason) {
-    case "stop":
-      return "stop";
-    case "length":
-      return "length";
-    case "tool_calls":
-      return "tool-calls";
-    case "content_filter":
-      return "content-filter";
-    default:
-      return "other";
-  }
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
-}
-
-function emptyUsage() {
-  return {
-    inputTokens: {
-      total: 0,
-      noCache: undefined,
-      cacheRead: undefined,
-      cacheWrite: undefined,
-    },
-    outputTokens: { total: 0, text: undefined, reasoning: undefined },
-  };
-}
-
-function errorStream(
-  _message: string
-): ReadableStream<LanguageModelV3StreamPart> {
-  return new ReadableStream({
-    start(controller) {
-      controller.enqueue({
-        type: "finish",
-        finishReason: "error" as any,
-        usage: emptyUsage(),
-      });
-      controller.close();
-    },
-  });
 }

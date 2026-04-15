@@ -1,66 +1,109 @@
-import type { ImageModelV2, ImageModelV2CallOptions } from "@ai-sdk/provider";
-import type { OpperModelConfig } from "./types.js";
-import { callOpperFunction } from "./opper-function-client.js";
+import type { ImageModelV3, ImageModelV3CallOptions, SharedV3Warning } from "@ai-sdk/provider";
+import {
+  combineHeaders,
+  createJsonResponseHandler,
+  postJsonToApi,
+} from "@ai-sdk/provider-utils";
+import { z } from "zod";
+import type { OpperFunctionModelConfig } from "./opper-function-config.js";
+import { opperFailedResponseHandler } from "./opper-error.js";
 
-export class OpperImageModel implements ImageModelV2 {
-  readonly specificationVersion = "v2" as const;
-  readonly provider = "opper";
+const imageResponseSchema = z.object({
+  data: z.object({
+    images: z.array(z.string()),
+  }),
+});
+
+export class OpperImageModel implements ImageModelV3 {
+  readonly specificationVersion = "v3" as const;
+  readonly provider = "opper.image";
   readonly maxImagesPerCall = 4;
   readonly modelId: string;
 
-  constructor(private readonly config: OpperModelConfig) {
-    this.modelId = config.modelId;
+  constructor(
+    modelId: string,
+    private readonly config: OpperFunctionModelConfig
+  ) {
+    this.modelId = modelId;
   }
 
-  async doGenerate(options: ImageModelV2CallOptions) {
-    const { prompt, n, size, aspectRatio, seed, abortSignal, providerOptions } = options;
+  async doGenerate(options: ImageModelV3CallOptions) {
+    const {
+      prompt,
+      n,
+      size,
+      aspectRatio,
+      seed,
+      abortSignal,
+      providerOptions,
+      headers: callHeaders,
+    } = options;
 
-    try {
-      const { data } = await callOpperFunction(
-        this.config,
-        {
-          prompt,
-          n: n ?? 1,
-          ...(size && { size }),
-          ...(aspectRatio && { aspect_ratio: aspectRatio }),
-          ...(seed !== undefined && { seed }),
-        },
-        {
-          type: "object",
-          properties: {
-            prompt: { type: "string" },
-            n: { type: "integer" },
-            size: { type: "string" },
-            aspect_ratio: { type: "string" },
-            seed: { type: "integer" },
-          },
-          required: ["prompt"],
-        },
-        {
-          type: "object",
-          properties: {
-            images: { type: "array", items: { type: "string" } },
-          },
-          required: ["images"],
-        },
-        { model: this.modelId !== "default" ? this.modelId : undefined },
-        { abortSignal, providerOptions }
-      );
+    const warnings: SharedV3Warning[] = [];
 
-      const images: string[] = (data.images as string[] | undefined) ?? [];
-
-      return {
-        images,
-        warnings: [],
-        response: {
-          timestamp: new Date(),
-          modelId: this.modelId,
-          headers: undefined,
+    const body = {
+      input_schema: {
+        type: "object",
+        properties: {
+          prompt: { type: "string" },
+          n: { type: "integer" },
+          size: { type: "string" },
+          aspect_ratio: { type: "string" },
+          seed: { type: "integer" },
         },
-      };
-    } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      throw new Error(`Opper image generation failed: ${msg}`);
-    }
+        required: ["prompt"],
+      },
+      output_schema: {
+        type: "object",
+        properties: {
+          images: { type: "array", items: { type: "string" } },
+        },
+        required: ["images"],
+      },
+      input: {
+        prompt,
+        n: n ?? 1,
+        ...(size && { size }),
+        ...(aspectRatio && { aspect_ratio: aspectRatio }),
+        ...(seed !== undefined && { seed }),
+      },
+      hints: {
+        model: this.modelId !== "default" ? this.modelId : undefined,
+      },
+    };
+
+    const functionName = resolveFunctionName(providerOptions, "ai-sdk-image");
+
+    const { value, responseHeaders } = await postJsonToApi({
+      url: `${this.config.baseURL}/v3/functions/${encodeURIComponent(functionName)}/call`,
+      headers: combineHeaders(
+        this.config.headers(),
+        { "X-Opper-Name": functionName },
+        callHeaders as Record<string, string | undefined>
+      ),
+      body,
+      failedResponseHandler: opperFailedResponseHandler,
+      successfulResponseHandler: createJsonResponseHandler(imageResponseSchema),
+      abortSignal,
+      fetch: this.config.fetch,
+    });
+
+    return {
+      images: value.data.images,
+      warnings,
+      response: {
+        timestamp: new Date(),
+        modelId: this.modelId,
+        headers: responseHeaders,
+      },
+    };
   }
+}
+
+function resolveFunctionName(
+  providerOptions: Record<string, unknown> | undefined,
+  defaultName: string
+): string {
+  const opts = providerOptions?.opper as { name?: string } | undefined;
+  return opts?.name ?? defaultName;
 }
