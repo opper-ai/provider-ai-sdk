@@ -18,17 +18,21 @@
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
-    "@ai-sdk/provider": "^3.0.3",
-    "@ai-sdk/provider-utils": "^4.0.0",
-    "zod": "^3.0.0"
+    "@ai-sdk/openai-compatible": "^2.0.0",
+    "@ai-sdk/provider": "^3.0.0",
+    "@ai-sdk/provider-utils": "^4.0.0"
   },
   "devDependencies": {
+    "@ai-sdk/test-server": "^1.0.3",
     "@types/node": "^20.0.0",
-    "ai": "^4.0.0",
-    "typescript": "^5.3.0"
+    "ai": "^6.0.0",
+    "typescript": "^5.3.0",
+    "vitest": "^4.1.4"
   },
   "peerDependencies": {
     "ai": ">=4.0.0"
@@ -45,7 +49,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/opper-ai/ai-sdk-provider.git"
+    "url": "git+https://github.com/opper-ai/provider-ai-sdk.git"
   },
-  "homepage": "https://github.com/opper-ai/ai-sdk-provider#readme"
+  "homepage": "https://github.com/opper-ai/provider-ai-sdk#readme"
 }
