@@ -1,6 +1,6 @@
 {
   "name": "@opperai/ai-sdk-provider",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Vercel AI SDK provider for Opper — run any model with a single API key",
   "license": "MIT",
   "author": "Opper AI",
