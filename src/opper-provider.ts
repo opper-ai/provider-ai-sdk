@@ -149,6 +149,7 @@ export function createOpper(
     headers: getHeaders,
     fetch: opperFetch as FetchFunction,
     includeUsage: true,
+    supportsStructuredOutputs: true,
     transformRequestBody,
   });
 
