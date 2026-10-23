@@ -5,6 +5,8 @@ import type {
   LanguageModelV4CallOptions,
   SharedV4ProviderOptions,
 } from '@ai-sdk/provider';
+import { withUserAgentSuffix } from '@ai-sdk/provider-utils';
+import { VERSION } from './version.js';
 
 /** Maps `providerOptions.opper` keys to the request headers Opper reads. */
 const OPPER_HEADER_OPTIONS = {
@@ -116,15 +118,18 @@ function withOpperHeaders<
     providerOptions?: SharedV4ProviderOptions;
   },
 >(options: T): T {
-  if (options.providerOptions?.opper == null) {
-    return options;
-  }
-  const { headers, providerOptions } = extractOpperHeaders(
-    options.providerOptions,
-  );
+  // The per-call headers replace the provider's on merge, and `ai` sets its
+  // own user-agent there, so the Opper suffix is appended at this level too.
+  const { headers, providerOptions } =
+    options.providerOptions?.opper == null
+      ? { headers: {}, providerOptions: options.providerOptions }
+      : extractOpperHeaders(options.providerOptions);
   return {
     ...options,
-    headers: { ...options.headers, ...headers },
+    headers: withUserAgentSuffix(
+      { ...options.headers, ...headers },
+      `ai-sdk-opper/${VERSION}`,
+    ),
     providerOptions,
   };
 }
