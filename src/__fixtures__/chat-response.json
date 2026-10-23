@@ -2,7 +2,7 @@
   "id": "chatcmpl-test123",
   "object": "chat.completion",
   "created": 1711113008,
-  "model": "openai/gpt-4o",
+  "model": "claude-sonnet-4-6",
   "choices": [
     {
       "index": 0,

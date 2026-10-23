@@ -37,7 +37,7 @@ afterAll(() => server.server.stop());
 function setup(name?: string) {
   const opper = createOpper({ apiKey: 'test-key' });
   const { middleware, handle } = opperSpan({ name, apiKey: 'test-key' });
-  const model = wrapLanguageModel({ model: opper('openai/gpt-4o'), middleware });
+  const model = wrapLanguageModel({ model: opper('claude-sonnet-4-6'), middleware });
   return { model, handle };
 }
 
