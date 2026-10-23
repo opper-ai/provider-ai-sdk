@@ -1,7 +1,7 @@
 {
   "name": "@opperai/ai-sdk-provider",
-  "version": "0.1.0",
-  "description": "Vercel AI SDK provider for Opper — run any model with a single API key",
+  "version": "0.2.0",
+  "description": "Vercel AI SDK provider for Opper, the EU-hosted AI gateway",
   "license": "MIT",
   "author": "Opper AI",
   "type": "module",
@@ -19,29 +19,32 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
     "prepublishOnly": "npm run build && npm test",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ai-sdk/openai-compatible": "^2.0.0",
-    "@ai-sdk/provider": "^3.0.0",
-    "@ai-sdk/provider-utils": "^4.0.0"
+    "@ai-sdk/openai-compatible": "^3.0.77",
+    "@ai-sdk/provider": "^4.0.33",
+    "@ai-sdk/provider-utils": "^5.0.67"
   },
   "devDependencies": {
-    "@ai-sdk/test-server": "^1.0.3",
-    "@types/node": "^20.0.0",
-    "ai": "^6.0.0",
-    "typescript": "^5.3.0",
-    "vitest": "^4.1.4"
+    "@ai-sdk/test-server": "^2.0.4",
+    "@types/node": "^22.0.0",
+    "ai": "^7.0.150",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.11",
+    "zod": "^4.1.8"
   },
   "peerDependencies": {
-    "ai": ">=4.0.0"
+    "ai": "^7.0.0",
+    "zod": "^3.25.76 || ^4.1.8"
   },
   "keywords": [
     "opper",
