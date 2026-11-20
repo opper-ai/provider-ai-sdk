@@ -60,7 +60,7 @@
     "type": "git",
     "url": "git+https://github.com/opper-ai/provider-ai-sdk.git"
   },
-  "homepage": "https://github.com/opper-ai/provider-ai-sdk#readme",
+  "homepage": "https://opper.ai",
   "bugs": {
     "url": "https://github.com/opper-ai/provider-ai-sdk/issues"
   }
